@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -121,11 +122,21 @@ func (w *Worker) handleJob(ctx context.Context, job *model.Job) {
 		if r := recover(); r != nil {
 			log.Error().Interface("panic", r).Str("job_id", job.UUID).Msg("job panicked")
 			msg := fmt.Sprintf("internal error: %v", r)
-			w.queue.Complete(ctx, job.UUID, "failed", &msg)
+			if err := w.queue.Complete(ctx, job.UUID, job.ClaimEpoch, "failed", &msg); err != nil {
+				if errors.Is(err, repository.ErrFenced) {
+					log.Warn().Str("job_id", job.UUID).Msg("job panic: fenced out, result discarded")
+				}
+			}
 		}
 	}()
 
 	log.Info().Str("worker_id", w.workerID).Str("job_id", job.UUID).Str("test_id", job.TestID).Msg("processing job")
+
+	// Heartbeat goroutine: keeps the lease alive while Docker runs.
+	// Stopped as soon as handleJob returns (the deferred cancel runs first).
+	hbCtx, hbCancel := context.WithCancel(ctx)
+	defer hbCancel()
+	go w.heartbeat(hbCtx, job)
 
 	current, err := w.queue.GetStatus(ctx, job.UUID)
 	if err == nil && current.Status == "cancelled" {
@@ -140,13 +151,47 @@ func (w *Worker) handleJob(ctx context.Context, job *model.Job) {
 		}
 		log.Error().Err(err).Str("worker_id", w.workerID).Str("job_id", job.UUID).Msg("job execution failed")
 		errorMsg := err.Error()
-		w.queue.Complete(ctx, job.UUID, "failed", &errorMsg)
+		if err := w.queue.Complete(ctx, job.UUID, job.ClaimEpoch, "failed", &errorMsg); err != nil {
+			if errors.Is(err, repository.ErrFenced) {
+				log.Warn().Str("job_id", job.UUID).Msg("job failed: fenced out, result discarded")
+			}
+		}
 	} else {
 		current, _ = w.queue.GetStatus(ctx, job.UUID)
 		if current != nil && current.Status == "cancelled" {
 			return
 		}
-		w.queue.Complete(ctx, job.UUID, "completed", nil)
+		if err := w.queue.Complete(ctx, job.UUID, job.ClaimEpoch, "completed", nil); err != nil {
+			if errors.Is(err, repository.ErrFenced) {
+				log.Warn().Str("job_id", job.UUID).Msg("job completed: fenced out, result discarded")
+			}
+		}
+	}
+}
+
+const heartbeatInterval = 10 * time.Second
+
+// heartbeat refreshes the job's lease every 10 s. If the worker is fenced out
+// (stale sweep ran while Docker was executing) it logs and exits — the job
+// result will be discarded by the fenced Complete calls above.
+func (w *Worker) heartbeat(ctx context.Context, job *model.Job) {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := w.queue.Heartbeat(ctx, job.UUID, w.workerID, job.ClaimEpoch); err != nil {
+				if errors.Is(err, repository.ErrFenced) {
+					log.Warn().Str("job_id", job.UUID).Msg("heartbeat: fenced out")
+					return
+				}
+				if ctx.Err() == nil {
+					log.Error().Err(err).Str("job_id", job.UUID).Msg("heartbeat failed")
+				}
+			}
+		}
 	}
 }
 

@@ -59,14 +59,23 @@ func (q *Queue) Dequeue(ctx context.Context, workerID string) (*model.Job, error
 	return job, nil
 }
 
-func (q *Queue) Complete(ctx context.Context, jobID string, status string, errorMessage *string) error {
-	if err := q.jobRepo.UpdateStatus(ctx, jobID, status, errorMessage); err != nil {
+// Complete finalises a job. epoch is the claim_epoch the worker received at
+// dequeue; if the epoch no longer matches (stale sweep ran while the worker
+// was executing) the update is silently dropped and ErrFenced is returned.
+func (q *Queue) Complete(ctx context.Context, jobID string, epoch int, status string, errorMessage *string) error {
+	if err := q.jobRepo.UpdateStatus(ctx, jobID, status, errorMessage, epoch); err != nil {
 		log.Error().Err(err).Str("job_id", jobID).Msg("failed to update job status")
 		return err
 	}
 
 	log.Info().Str("job_id", jobID).Str("status", status).Msg("job completed")
 	return nil
+}
+
+// Heartbeat extends the lease on a running job. Returns repository.ErrFenced
+// if the job was swept or re-claimed since this worker started it.
+func (q *Queue) Heartbeat(ctx context.Context, jobID string, workerID string, epoch int) error {
+	return q.jobRepo.Heartbeat(ctx, jobID, workerID, epoch)
 }
 
 func (q *Queue) GetStatus(ctx context.Context, jobID string) (*model.Job, error) {

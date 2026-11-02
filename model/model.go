@@ -110,15 +110,17 @@ type TestListItem struct {
 }
 
 type Job struct {
-	UUID         string     `db:"uuid"`
-	TestID       string     `db:"test_id"`
-	Status       string     `db:"status"`
-	Trigger      string     `db:"trigger"`
-	QueuedAt     time.Time  `db:"queued_at"`
-	StartedAt    *time.Time `db:"started_at"`
-	FinishedAt   *time.Time `db:"finished_at"`
-	WorkerID     *string    `db:"worker_id"`
-	ErrorMessage *string    `db:"error_message"`
+	UUID           string     `db:"uuid"`
+	TestID         string     `db:"test_id"`
+	Status         string     `db:"status"`
+	Trigger        string     `db:"trigger"`
+	QueuedAt       time.Time  `db:"queued_at"`
+	StartedAt      *time.Time `db:"started_at"`
+	FinishedAt     *time.Time `db:"finished_at"`
+	WorkerID       *string    `db:"worker_id"`
+	ErrorMessage   *string    `db:"error_message"`
+	ClaimEpoch     int        `db:"claim_epoch"`
+	LeaseExpiresAt *time.Time `db:"lease_expires_at"`
 }
 
 // EnvVar is a per-test environment variable. For secrets, Value holds

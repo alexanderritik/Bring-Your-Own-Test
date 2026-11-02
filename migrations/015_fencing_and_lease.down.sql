@@ -1,0 +1,2 @@
+ALTER TABLE jobs DROP COLUMN IF EXISTS lease_expires_at;
+ALTER TABLE jobs DROP COLUMN IF EXISTS claim_epoch;
